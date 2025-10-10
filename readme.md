@@ -33,6 +33,14 @@ Half assed by April Macchiato@Saggitarius
 - Multiple dice rolling (up to 10)
 - Fun result messages and statistics
 
+### Trivia
+- Starts a session of 10 questions from a selected category
+- Keeps track of answers and score for participants
+- Has a leaderboard at the end
+- Trivia questions are pruned from the channel after 1hour
+- Locks answers to prevent switching, and disables choices when the next question is up
+- Notify users with ephemeral messages if they have the correct answer and gives them the correct one
+
 ## Setup
 
 ### Prerequisites
@@ -224,6 +232,11 @@ Roll dice with animation:
 /roll sides:20 count:3
 ```
 
+### `/trivia`
+Starts a trivia with the following options:
+- **Category**: Movies, Music, Games, Anime
+- **Time**: Amount of time per questions, 10s, 30s, 60s
+
 ## Key Functions
 
 ### Event Management
@@ -331,4 +344,5 @@ The bot logs all activities to both console and `bot.log` file, including:
 ## Contributing
 
 Feel free to submit issues and enhancement requests!
+
 

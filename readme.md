@@ -55,8 +55,8 @@ AUTHORIZED_USERS=user_id_1,user_id_2,user_id_3
 SERVER_ROLE_ID=server_role_id
 EVENT_CHANNEL_ID=channel_id_for_events
 WELC_CH_ID=welcome_channel_id
-FC_MEMBER_ROLE_ID=self_explanatory
-NON_FC_MEMBER_ROLE_ID=self_explanatory
+FC_MEMBER_ROLE_ID=1236396084046069791
+NON_FC_MEMBER_ROLE_ID=1249832281682743367
 ADMIN_ROLE_IDS=admin_role_id_1,admin_role_id_2
 ```
 
@@ -189,8 +189,8 @@ node bot.js
 | `EVENT_CHANNEL_ID` | Channel ID where events will be posted |
 | `SERVER_ROLE_ID` | in case you want to use server roles instead of specific userIDs to limit who can create events |
 | `WELC_CH_ID` | Welcome channel ID for FC verification (fallback if DMs fail) |
-| `FC_MEMBER_ROLE_ID` | Role ID assigned to verified FC members  |
-| `NON_FC_MEMBER_ROLE_ID` | Role ID assigned to non-FC members  |
+| `FC_MEMBER_ROLE_ID` | Role ID assigned to verified FC members (default: 1236396084046069791) |
+| `NON_FC_MEMBER_ROLE_ID` | Role ID assigned to non-FC members (default: 1249832281682743367) |
 | `ADMIN_ROLE_IDS` | Comma-separated role IDs for admin notifications during verification failures |
 
 ## Commands
@@ -238,15 +238,6 @@ Roll dice with animation:
 - `getEventFromRedis()` - Retrieves event information
 - `deleteEventFromRedis()` - Removes events from storage
 
-## File Structure
-
-```
-├── cappuccino.js              # Main bot file
-├── bot.log            # Application logs (auto-generated)
-├── .env               # Environment variables
-└── package.json       # Dependencies
-```
-
 ## Event Types Supported
 
 - Maps
@@ -288,7 +279,7 @@ The bot automatically verifies new server members against your Free Company rost
 - FC member data is cached in Redis for 24 hours to avoid rate limits
 - Cache is automatically refreshed every 24 hours
 - Fallback to cached data if Lodestone is unreachable
-- Supports the specific FC: https://eu.finalfantasyxiv.com/lodestone/freecompany/9279667032196922298/member
+- Supports a hardcoded specific FC. it can be changed to a .env value, or stay hardcoded
 
 ### Manual Intervention
 - If verification fails or character ID cannot be extracted, admins are notified via DM
@@ -340,4 +331,3 @@ The bot logs all activities to both console and `bot.log` file, including:
 ## Contributing
 
 Feel free to submit issues and enhancement requests!
-

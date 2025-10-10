@@ -55,8 +55,8 @@ AUTHORIZED_USERS=user_id_1,user_id_2,user_id_3
 SERVER_ROLE_ID=server_role_id
 EVENT_CHANNEL_ID=channel_id_for_events
 WELC_CH_ID=welcome_channel_id
-FC_MEMBER_ROLE_ID=1236396084046069791
-NON_FC_MEMBER_ROLE_ID=1249832281682743367
+FC_MEMBER_ROLE_ID=role_id_for_fc_members
+NON_FC_MEMBER_ROLE_ID=role_id_for_fc_friend
 ADMIN_ROLE_IDS=admin_role_id_1,admin_role_id_2
 ```
 
@@ -331,3 +331,4 @@ The bot logs all activities to both console and `bot.log` file, including:
 ## Contributing
 
 Feel free to submit issues and enhancement requests!
+

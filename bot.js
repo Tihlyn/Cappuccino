@@ -8,6 +8,9 @@ require('dotenv').config();
 const fs = require('fs').promises;
 const path = require('path');
 
+// Import trivia module
+const triviaModule = require('./quizz');
+
 // Configuration
 const AUTHORIZED_USERS = process.env.AUTHORIZED_USERS; 
 const EVENT_CHANNEL_ID = process.env.EVENT_CHANNEL_ID;
@@ -19,7 +22,7 @@ const NON_FC_MEMBER_ROLE_ID = process.env.NON_FC_MEMBER_ROLE_ID || '124983228168
 const ADMIN_ROLE_IDS = process.env.ADMIN_ROLE_IDS;
 const FFXIV_FC_URL = 'https://eu.finalfantasyxiv.com/lodestone/freecompany/9279667032196922298/member';
 const FC_CACHE_KEY = 'fc_members_cache';
-const FC_CACHE_EXPIRY = 24 * 60 * 60;
+const FC_CACHE_EXPIRY = 24 * 60 * 60; // 24 hours in seconds 
 //redis connection info & logging
 const redis = new Redis({
   host: 'localhost',
@@ -80,7 +83,7 @@ async function deleteDMMessagesForEvent(eventId) {
   log(`Deleted DM tracking data for event ${eventId}`, 'DEBUG');
 }
 
-
+// Prune DMs for completed events
 async function pruneDMsForCompletedEvent(eventId, event) {
   const dmMessages = await getDMMessagesForEvent(eventId);
   const currentTime = Date.now();
@@ -99,7 +102,8 @@ async function pruneDMsForCompletedEvent(eventId, event) {
     try {
       const { userId, messageId, messageType } = dmData;
       
-      
+      // Only prune specific types of DMs for completed events
+      // Keep role_change messages as they might still be relevant
       const typesToPrune = ['registration', 'withdrawal', 'cancellation', 'reminder', 'time_change'];
       
       if (!typesToPrune.includes(messageType)) {
@@ -128,10 +132,10 @@ async function pruneDMsForCompletedEvent(eventId, event) {
     }
   });
 
-  
+  // Process all DM cleanup operations in parallel
   await Promise.allSettled(prunePromises);
   
- 
+  // Clean up the tracking data
   await deleteDMMessagesForEvent(eventId);
 }
 
@@ -145,7 +149,7 @@ async function fetchFCMembers() {
     const members = {};
     let totalFound = 0;
 
-    
+    // Helper to process a single page's HTML
     const processPage = (html, pageNumber) => {
       const $ = cheerio.load(html);
       let pageCount = 0;
@@ -174,7 +178,7 @@ async function fetchFCMembers() {
         }
       });
 
-      // Fallback
+      // Fallback: legacy selector if new one yielded nothing (site layout variance)
       if (anchors.length === 0) {
         $('.entry').each((_, element) => {
           const $el = $(element);
@@ -214,13 +218,13 @@ async function fetchFCMembers() {
 
       const newOnPage = processPage(response.data, page);
       if (!newOnPage) {
-        
+        // No new members found; assume last page reached
         break;
       }
       totalFound += newOnPage;
       page++;
 
-      
+      // Be polite – slight delay to avoid hitting rate limits
       await new Promise(r => setTimeout(r, 250));
     }
 
@@ -265,7 +269,7 @@ function extractLodestonCharacterId(url) {
     return null;
   }
   
-  
+  // Match various lodestone URL patterns
   const patterns = [
     /lodestone\/character\/(\d+)/i,
     /character\/(\d+)/i,
@@ -299,20 +303,20 @@ async function verifyFCMembershipFromCharacterPage(characterId) {
     
     const $ = cheerio.load(response.data);
     
-    
+    // Extract character name from the page
     const characterName = $('.frame__chara__name').first().text().trim();
     
-    
+    // Look for the specific FC link as requested in the problem statement
     const fcLink = $('h4 a[href="/lodestone/freecompany/9279667032196922298/"]');
     const isSeventhHavenMember = fcLink.length > 0 && fcLink.text().includes('Seventh Haven');
     
     log(`Double verification result for character ${characterId}: ${isSeventhHavenMember ? 'IS' : 'NOT'} Seventh Haven FC member`, 'DEBUG');
     
-    
+    // Return both the FC membership status and character name
     return { isFCMember: isSeventhHavenMember, characterName };
   } catch (error) {
     log(`Error during double verification for character ${characterId}: ${error.message}`, 'WARN');
-    // Return null to indicate verification failed, the cache check is the fallback
+    // Return null to indicate verification failed, let the cache check be the fallback
     return null;
   }
 }
@@ -345,22 +349,37 @@ async function handleNewMemberVerification(member) {
       log(`Failed to send DM to ${member.user.tag}: ${dmError.message}`, 'WARN');
       isUsingDM = false;
       
-      // Fallback to welcome channel
+      // Fallback to welcome channel with button to trigger modal
       const welcomeChannelId = WELC_CH_ID || EVENT_CHANNEL_ID;
       if (welcomeChannelId) {
         try {
           verificationChannel = await member.guild.channels.fetch(welcomeChannelId);
           if (verificationChannel) {
-            const fallbackEmbed = dmEmbed
-              .setDescription(`${member.user}, to complete your verification, please provide your FFXIV Lodestone character link.`)
-              .setFooter({ text: 'This message will be deleted after verification.' });
+            const fallbackEmbed = new EmbedBuilder()
+              .setColor('#0099ff')
+              .setTitle('🎉 Welcome to the Server!')
+              .setDescription(`${member.user}, to complete your verification, please click the button below to provide your FFXIV Lodestone character link.`)
+              .addFields(
+                { name: '📝 What you need', value: 'Your FFXIV Lodestone character page URL' },
+                { name: '📋 Instructions', value: '1. Click the button below\n2. Enter your Lodestone character link in the modal\n3. Submit to complete verification' }
+              )
+              .setFooter({ text: 'Click the button below to start verification.' });
+            
+            const verifyButton = new ButtonBuilder()
+              .setCustomId(`verifyMember_${member.id}`)
+              .setLabel('Start Verification')
+              .setStyle(ButtonStyle.Primary)
+              .setEmoji('✅');
+            
+            const row = new ActionRowBuilder().addComponents(verifyButton);
             
             await verificationChannel.send({ 
               content: `${member.user}`, 
               embeds: [fallbackEmbed],
+              components: [row],
               allowedMentions: { users: [member.id] }
             });
-            log(`Sent verification message to welcome channel for ${member.user.tag}`, 'DEBUG');
+            log(`Sent verification button to welcome channel for ${member.user.tag}`, 'DEBUG');
           }
         } catch (channelError) {
           log(`Failed to send message to welcome channel: ${channelError.message}`, 'ERROR');
@@ -370,47 +389,41 @@ async function handleNewMemberVerification(member) {
       }
     }
 
-    // message collector
-    const filter = (message) => message.author.id === member.id;
-    const collectorOptions = { 
-      max: 1, 
-      time: 10 * 60 * 1000,
-      errors: ['time']
-    };
+    // Set up message collector only for DM case
+    // For channel-based verification, modal submission will handle the flow
+    if (isUsingDM) {
+      const filter = (message) => message.author.id === member.id;
+      const collectorOptions = { 
+        max: 1, 
+        time: 10 * 60 * 1000, // 10 minutes
+        errors: ['time']
+      };
 
-    const collector = isUsingDM ? 
-      dmChannel.createMessageCollector(collectorOptions) :
-      verificationChannel.createMessageCollector(collectorOptions);
+      const collector = dmChannel.createMessageCollector(collectorOptions);
 
-    collector.on('collect', async (message) => {
-      await processLodestoneLinkSubmission(member, message, isUsingDM);
-    });
+      collector.on('collect', async (message) => {
+        await processLodestoneLinkSubmission(member, message, isUsingDM);
+      });
 
-    collector.on('end', async (collected, reason) => {
-      if (reason === 'time' && collected.size === 0) {
-        log(`Verification timeout for ${member.user.tag}`, 'WARN');
-        
-        const timeoutEmbed = new EmbedBuilder()
-          .setColor('#ff0000')
-          .setTitle('⏰ Verification Timeout')
-          .setDescription('Verification time has expired. Please contact server administrators for manual verification.');
+      collector.on('end', async (collected, reason) => {
+        if (reason === 'time' && collected.size === 0) {
+          log(`Verification timeout for ${member.user.tag}`, 'WARN');
+          
+          const timeoutEmbed = new EmbedBuilder()
+            .setColor('#ff0000')
+            .setTitle('⏰ Verification Timeout')
+            .setDescription('Verification time has expired. Please contact server administrators for manual verification.');
 
-        try {
-          if (isUsingDM && dmChannel) {
+          try {
             await dmChannel.send({ embeds: [timeoutEmbed] });
-          } else if (verificationChannel) {
-            await verificationChannel.send({ 
-              content: `${member.user}`, 
-              embeds: [timeoutEmbed] 
-            });
+          } catch (error) {
+            log(`Failed to send timeout message: ${error.message}`, 'ERROR');
           }
-        } catch (error) {
-          log(`Failed to send timeout message: ${error.message}`, 'ERROR');
-        }
 
-        await notifyAdminsForManualIntervention(member, 'Verification timeout');
-      }
-    });
+          await notifyAdminsForManualIntervention(member, 'Verification timeout');
+        }
+      });
+    }
 
   } catch (error) {
     log(`Error in handleNewMemberVerification: ${error.message}`, 'ERROR');
@@ -435,12 +448,13 @@ async function processLodestoneLinkSubmission(member, message, isUsingDM) {
 
     log(`Processing lodestone character ID ${characterId} for ${member.user.tag}`, 'DEBUG');
     
-    
+    // Get FC members and check for match
     const fcMembers = await getFCMembers();
     let isFCMember = fcMembers.hasOwnProperty(characterId);
     let characterName = isFCMember ? fcMembers[characterId].name : null;
     
-    
+    // Double verification check: verify FC membership by checking character's lodestone page
+    // This will also fetch the character name for non-FC members
     const verificationResult = await verifyFCMembershipFromCharacterPage(characterId);
     
     if (verificationResult !== null) {
@@ -458,11 +472,11 @@ async function processLodestoneLinkSubmission(member, message, isUsingDM) {
         log(`Retrieved character name for non-FC member ${member.user.tag}: ${characterName}`, 'DEBUG');
       }
     } else if (isFCMember) {
-      // Double verification failed due to error
+      // Double verification failed due to error, keep cached result but log warning
       log(`Double verification error for ${member.user.tag}: using cached FC data as fallback`, 'WARN');
     }
     
-    // Check for duplicate nicknames BEFORE role assignment
+    // Check for duplicate nicknames BEFORE role assignment (now applies to both FC members and friends)
     if (characterName) {
       const existingMember = member.guild.members.cache.find(m => 
         m.displayName === characterName && m.id !== member.id
@@ -471,7 +485,7 @@ async function processLodestoneLinkSubmission(member, message, isUsingDM) {
       if (existingMember) {
         log(`Nickname "${characterName}" already exists for user ${existingMember.user.tag} (${existingMember.id})`, 'WARN');
         
-        
+        // Check if this user has already submitted this character before (by checking their current nickname)
         const userHasPendingVerification = member.displayName.includes('(Pending Verification)');
         
         if (userHasPendingVerification) {
@@ -506,7 +520,7 @@ async function processLodestoneLinkSubmission(member, message, isUsingDM) {
           await message.reply({ embeds: [duplicateNicknameEmbed] });
           await member.setNickname(`${member.displayName} (Pending Verification)`);
           log(`Prompted ${member.user.tag} to provide different character due to duplicate: ${characterName}`, 'INFO');
-          return; // Don't assign role
+          return; // Don't assign role, let user try again
         }
       }
     }
@@ -552,7 +566,7 @@ async function processLodestoneLinkSubmission(member, message, isUsingDM) {
       return;
     }
 
-    // Send success message 
+    // Send success message - improved messages for both roles
     const successEmbed = new EmbedBuilder()
       .setColor('#00ff00')
       .setTitle('✅ Verification Complete')
@@ -596,11 +610,18 @@ async function notifyAdminsForManualIntervention(member, reason) {
     
     if (adminRoleIds.length > 0) {
       const guild = member.guild;
+      
+      // Fetch all guild members to ensure we get offline admins too
+      await guild.members.fetch();
+      
       for (const roleId of adminRoleIds) {
         try {
           const role = await guild.roles.fetch(roleId);
           if (role) {
-            const membersWithRole = role.members.map(m => m.user);
+            // Get all members with this role, not just cached ones
+            const membersWithRole = guild.members.cache
+              .filter(guildMember => guildMember.roles.cache.has(roleId))
+              .map(guildMember => guildMember.user);
             adminsToNotify.push(...membersWithRole);
           }
         } catch (error) {
@@ -608,8 +629,8 @@ async function notifyAdminsForManualIntervention(member, reason) {
         }
       }
     }
-
-    // Notify all authorized users
+    
+    // Fallback: notify authorized users
     if (adminsToNotify.length === 0) {
       const authorizedUserIds = AUTHORIZED_USERS ? AUTHORIZED_USERS.split(',').map(id => id.trim()) : [];
       for (const userId of authorizedUserIds) {
@@ -641,7 +662,7 @@ async function notifyAdminsForManualIntervention(member, reason) {
       .setTimestamp()
       .setFooter({ text: 'Member Verification System' });
 
-    // Send DM to each admin
+    // Send DM to each admin (parallelize)
     const notifications = adminsToNotify.map(async (admin) => {
       try {
         const dmChannel = await admin.createDM();
@@ -727,7 +748,7 @@ const eventCommand = new SlashCommandBuilder()
       .setRequired(true)
   );
 
-
+// Helper function to check if a date is in DST for UK (BST)
 function isUKDST(date) {
   const year = date.getFullYear();
   // DST starts last Sunday in March, ends last Sunday in October
@@ -739,7 +760,7 @@ function isUKDST(date) {
   return date >= marchLastSunday && date < octoberLastSunday;
 }
 
-
+// Helper function to check if a date is in DST for Central Europe (CEST)
 function isEuropeDST(date) {
   const year = date.getFullYear();
   // DST starts last Sunday in March, ends last Sunday in October
@@ -765,7 +786,7 @@ function validateDateTime(dateString, timeString, timezone) {
     return { valid: false, error: 'Invalid time format. Use: HH:MM' };
   }
 
-  
+  // Parse date and time
   const [year, month, day] = dateString.split('-').map(Number);
   const [hour, minute] = timeString.split(':').map(Number);
   
@@ -952,7 +973,7 @@ function createEventEmbed(eventType, eventDate, organizer, description = '', par
   return embed;
 }
 
-// role selection buttons
+// Add: role selection buttons
 function createRoleButtons(eventId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -978,11 +999,11 @@ function createRoleButtons(eventId) {
   );
 }
 
-
+// New: class selection buttons for each role
 function createClassButtons(role, eventId) {
   const classes = ROLE_CLASS[role];
   if (!classes || classes.length === 0) {
-    return null; // No classes for this role
+    return null; // No classes for this role (blue mage)
   }
 
   const rows = [];
@@ -1017,7 +1038,7 @@ function createClassButtons(role, eventId) {
   return rows;
 }
 
-// role change selection buttons
+// New: role change selection buttons (separate IDs to distinguish logic)
 function createRoleChangeButtons(eventId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -1038,11 +1059,11 @@ function createRoleChangeButtons(eventId) {
   );
 }
 
-
+// New: class selection buttons for role changes
 function createRoleChangeClassButtons(role, eventId) {
   const classes = ROLE_CLASS[role];
   if (!classes || classes.length === 0) {
-    return null; // No classes for this role
+    return null; // No classes for this role (blue mage)
   }
 
   const rows = [];
@@ -1062,7 +1083,7 @@ function createRoleChangeClassButtons(role, eventId) {
         .setStyle(ButtonStyle.Secondary);
       
       if (emoji) {
-        
+        // Extract emoji ID and name from the custom emoji format
         const emojiMatch = emoji.match(/<:(\w+):(\d+)>/);
         if (emojiMatch) {
           button.setEmoji({ id: emojiMatch[2], name: emojiMatch[1] });
@@ -1077,7 +1098,7 @@ function createRoleChangeClassButtons(role, eventId) {
   return rows;
 }
 
-// createEventButtons to show participant count
+// Update: createEventButtons to show participant count
 function createEventButtons(eventId, organizerId, currentUserId, participants = [], groupType = 'standard') {
   const maxParticipants = groupType === 'light_party' ? 4 : 8;
   const row1 = new ActionRowBuilder();
@@ -1089,7 +1110,7 @@ function createEventButtons(eventId, organizerId, currentUserId, participants = 
       .setEmoji('✅')
       .setDisabled(participants.length >= maxParticipants)
   );
-  // Withdraw button
+  // New: Withdraw button
   row1.addComponents(
     new ButtonBuilder()
       .setCustomId(`withdraw_${eventId}`)
@@ -1097,7 +1118,7 @@ function createEventButtons(eventId, organizerId, currentUserId, participants = 
       .setStyle(ButtonStyle.Secondary)
       .setEmoji('↩️')
   );
-  // Change Role button
+  // New: Change Role button
   row1.addComponents(
     new ButtonBuilder()
       .setCustomId(`changeRole_${eventId}`)
@@ -1106,7 +1127,7 @@ function createEventButtons(eventId, organizerId, currentUserId, participants = 
       .setEmoji('🔄')
   );
   
-  
+  // Organizer-only buttons in a second row if needed
   if (currentUserId === organizerId) {
     // If we have space in row1, add organizer buttons there, otherwise create row2
     if (row1.components.length <= 3) {
@@ -1188,6 +1209,24 @@ function createChangeTimeModal(eventId) {
   return modal;
 }
 
+// Create modal for member verification
+function createVerificationModal(memberId) {
+  const modal = new ModalBuilder()
+    .setCustomId(`verificationModal_${memberId}`)
+    .setTitle('🎉 Welcome to the Server!');
+
+  const lodestoneInput = new TextInputBuilder()
+    .setCustomId('lodestone_url')
+    .setLabel('FFXIV Lodestone Character Link')
+    .setStyle(TextInputStyle.Short)
+    .setPlaceholder('https://eu.finalfantasyxiv.com/lodestone/character/...')
+    .setRequired(true);
+
+  const row = new ActionRowBuilder().addComponents(lodestoneInput);
+  modal.addComponents(row);
+  return modal;
+}
+
 // Schedule reminder jobs
 async function scheduleReminders(eventId, eventDate, participants) {
   const eventTimestamp = eventDate.getTime();
@@ -1214,7 +1253,7 @@ async function scheduleReminders(eventId, eventDate, participants) {
           'DEBUG'
         );
 
-        
+        // Add promise to array for parallel execution
         reminderPromises.push(
           reminderQueue.add(jobName, {
             eventId,
@@ -1271,7 +1310,7 @@ async function cancelEventReminders(eventId) {
   await Promise.allSettled(removalPromises);
 }
 
-
+// New: cancel reminders for a single participant
 async function cancelParticipantReminders(eventId, participantId) {
   const jobs = await reminderQueue.getJobs(['waiting', 'delayed']);
   const participantJobs = jobs.filter(job => job.data.eventId === eventId && job.data.participantId === participantId);
@@ -1393,7 +1432,7 @@ async function handleCreateEvent(interaction) {
   }
 }
 
-
+// Helper function to parse button interactions
 function parseButtonInteraction(customId) {
   const [action, ...rest] = customId.split('_');
   let eventId, role, className;
@@ -1425,6 +1464,22 @@ function parseButtonInteraction(customId) {
 }
 
 async function handleButtonInteraction(interaction) {
+  // Handle verification button separately (not event-related)
+  if (interaction.customId.startsWith('verifyMember_')) {
+    const memberId = interaction.customId.substring('verifyMember_'.length);
+    
+    // Check if the user clicking is the member who needs verification
+    if (interaction.user.id !== memberId) {
+      return interaction.reply({ 
+        content: '❌ This verification is not for you.', 
+        ephemeral: true 
+      });
+    }
+    
+    const modal = createVerificationModal(memberId);
+    return await interaction.showModal(modal);
+  }
+  
   let parsed;
   
   try {
@@ -1502,7 +1557,7 @@ async function handleButtonInteraction(interaction) {
     });
   }
 
-  // PARTICIPATE
+  // PARTICIPATE flow unchanged
   if (action === 'participate') {
     const userId = interaction.user.id;
     if (event.participants.some(p => p.id === userId)) {
@@ -1521,7 +1576,7 @@ async function handleButtonInteraction(interaction) {
     });
   }
 
-  // ROLE SELECTION (initial join)
+  // ROLE SELECTION (initial join) - now prompts for class selection
   if (action === 'role') {
     const userId = interaction.user.id;
     if (!['tank', 'healer', 'dps', 'blue_mage'].includes(role)) {
@@ -1551,7 +1606,7 @@ async function handleButtonInteraction(interaction) {
       await scheduleReminders(eventId, event.date, [userId]);
       log(`User ${userId} joined event ${eventId} as ${role}`, 'DEBUG');
       
-      
+      // Update event message
       const channel = interaction.message?.channel || interaction.channel;
       const embed = createEventEmbed(event.type, event.date, event.organizer, event.description, event.participants, event.groupType || 'standard');
       const buttons = createEventButtons(eventId, event.organizer, event.organizer, event.participants, event.groupType || 'standard');
@@ -1678,7 +1733,7 @@ async function handleButtonInteraction(interaction) {
           .setTimestamp()]
       });
       
-      
+      // Track the DM message for later pruning
       await saveDMMessageForEvent(eventId, userId, dmMessage.id, 'registration');
       
       log(`Confirmation DM sent to user ${userId} for event ${eventId}`, 'DEBUG');
@@ -1693,7 +1748,7 @@ async function handleButtonInteraction(interaction) {
     });
   }
 
-  // ROLE CHANGE selection handling
+  // ROLE CHANGE selection handling - now prompts for class selection
   if (action === 'rolechange') {
     const userId = interaction.user.id;
     if (!['tank', 'healer', 'dps', 'blue_mage'].includes(role)) {
@@ -1731,7 +1786,7 @@ async function handleButtonInteraction(interaction) {
       await saveEventToRedis(event);
       log(`User ${userId} changed role from ${oldRole} to ${role} in event ${eventId}`, 'DEBUG');
       
-      
+      // Update event message
       try {
         const channel = interaction.message?.channel || interaction.channel;
         const embed = createEventEmbed(event.type, event.date, event.organizer, event.description, event.participants, event.groupType || 'standard');
@@ -1757,7 +1812,7 @@ async function handleButtonInteraction(interaction) {
             .setTimestamp()]
         });
         
-        
+        // Track the DM message (role changes are preserved)
         await saveDMMessageForEvent(eventId, userId, dmMessage.id, 'role_change');
         
       } catch (e) {
@@ -1844,7 +1899,7 @@ async function handleButtonInteraction(interaction) {
           .setTimestamp()]
       });
       
-      
+      // Track the DM message (role changes are preserved)
       await saveDMMessageForEvent(eventId, userId, dmMessage.id, 'role_change');
       
     } catch (e) {
@@ -2078,7 +2133,7 @@ function log(message, level = 'DEBUG') {
     const timestamp = new Date().toISOString();
     const logMessage = `${timestamp} ${level}: ${message}`;
     
-    
+    // Use console based on log level
     switch (level) {
         case 'ERROR':
             console.error(logMessage);
@@ -2094,13 +2149,13 @@ function log(message, level = 'DEBUG') {
             break;
     }
     
-    
+    // Async file append with error handling
     fs.appendFile('bot.log', logMessage + '\n').catch(err => {
         console.error(`Failed to write to log file: ${err.message}`);
     });
 }
 
-// Safe reply 
+// Safe reply helper to avoid "Unknown interaction" errors when already acknowledged
 function safeReply(interaction, payload) {
   try {
     if (!interaction) return;
@@ -2133,7 +2188,7 @@ function getUnauthorizedReply() {
   return { content: '❌ You are not authorized to use this command.', ephemeral: true };
 }
 
-// Early return for unauthorized access
+// Early return helper for unauthorized access
 function checkAuthorization(interaction, requireRole = false) {
   const userId = interaction.user.id;
   const isUserAuthorized = isAuthorizedUser(userId);
@@ -2498,6 +2553,20 @@ const commands = [
     new SlashCommandBuilder()
         .setName('purge-events')
         .setDescription('Purge all events (debug)'),
+    // Trivia commands
+    new SlashCommandBuilder()
+        .setName('trivia')
+        .setDescription('Start a trivia quiz event'),
+    new SlashCommandBuilder()
+        .setName('purge-quiz')
+        .setDescription('Remove all messages from a specific quiz session')
+        .addStringOption(option =>
+            option.setName('session')
+                .setDescription('Session ID to purge (format: timestamp-channelId)')
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('list-sessions')
+        .setDescription('List all active quiz sessions in this server'),
 ];
 
 // OK so this section about upload and config loading is old and deprecated. it was from another function from a personal project
@@ -2552,6 +2621,50 @@ client.once('ready', async () => {
 // Handle modal submissions
 async function handleModalSubmission(interaction) {
   const customId = interaction.customId;
+  
+  // Handle verification modal submission
+  if (customId.startsWith('verificationModal_')) {
+    const memberId = customId.substring('verificationModal_'.length);
+    
+    // Verify the user submitting is the member
+    if (interaction.user.id !== memberId) {
+      return interaction.reply({ 
+        content: '❌ This verification is not for you.', 
+        ephemeral: true 
+      });
+    }
+    
+    const lodestoneUrl = interaction.fields.getTextInputValue('lodestone_url');
+    
+    // Create a mock message object to work with existing processLodestoneLinkSubmission
+    const mockMessage = {
+      content: lodestoneUrl,
+      author: interaction.user,
+      channel: interaction.channel,
+      id: interaction.id, // Use interaction ID as message ID
+      reply: async (payload) => {
+        // For modal submissions, we reply to the interaction instead
+        if (!interaction.replied && !interaction.deferred) {
+          return await interaction.reply({ ...payload, ephemeral: false });
+        } else {
+          return await interaction.followUp({ ...payload, ephemeral: false });
+        }
+      },
+      delete: async () => {
+        // Mock delete - for modal submissions, we don't need to delete anything
+        // The interaction response will be handled by Discord
+        log(`Mock message delete called for modal verification`, 'DEBUG');
+      }
+    };
+    
+    // Get the member object
+    const member = interaction.guild.members.cache.get(memberId) || await interaction.guild.members.fetch(memberId);
+    
+    // Process the verification using the existing function
+    // Pass isUsingDM = false to indicate this is a channel-based interaction
+    await processLodestoneLinkSubmission(member, mockMessage, false);
+    return;
+  }
   
   if (customId.startsWith('changeTimeModal_')) {
     const eventId = customId.substring('changeTimeModal_'.length);
@@ -2733,6 +2846,12 @@ client.on('interactionCreate', async interaction => {
         const { commandName } = interaction;
         
         try {
+            // Check if it's a trivia command
+            if (commandName === 'trivia' || commandName === 'purge-quiz' || commandName === 'list-sessions') {
+                await triviaModule.handleTriviaInteraction(client, log, interaction);
+                return;
+            }
+
             switch (commandName) {            
                 case 'roll':
                     const sides = interaction.options.getInteger('sides') || 6;
@@ -2775,10 +2894,30 @@ client.on('interactionCreate', async interaction => {
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
         try {
+            // Check if it's a trivia button (starts with "answer_")
+            if (interaction.customId.startsWith("answer_")) {
+                await triviaModule.handleTriviaInteraction(client, log, interaction);
+                return;
+            }
+            
             await handleButtonInteraction(interaction);
         } catch (error) {
             log(`Error handling button interaction: ${error.message}`, 'ERROR');
             await safeReply(interaction, { content: 'An error occurred while handling the button interaction.', ephemeral: true });
+        }
+    }
+    
+    // Handle select menu interactions (for trivia)
+    if (interaction.isStringSelectMenu()) {
+        try {
+            // Check if it's a trivia select menu
+            if (interaction.customId === "trivia_category" || interaction.customId.startsWith("trivia_time_")) {
+                await triviaModule.handleTriviaInteraction(client, log, interaction);
+                return;
+            }
+        } catch (error) {
+            log(`Error handling select menu interaction: ${error.message}`, 'ERROR');
+            await safeReply(interaction, { content: 'An error occurred while handling the selection.', ephemeral: true });
         }
     }
 });

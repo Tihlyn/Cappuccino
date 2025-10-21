@@ -1,5 +1,5 @@
 const { Client, GatewayIntentBits, ActivityType, SlashCommandBuilder, REST, Routes, AttachmentBuilder } = require('discord.js');
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, AuditLogEvent } = require('discord.js');
 const { Queue, Worker } = require('bullmq');
 const Redis = require('ioredis');
 const axios = require('axios');
@@ -15,7 +15,8 @@ const triviaModule = require('./quizz');
 const AUTHORIZED_USERS = process.env.AUTHORIZED_USERS; 
 const EVENT_CHANNEL_ID = process.env.EVENT_CHANNEL_ID;
 const AUTHORIZED_ROLE_ID = process.env.SERVER_ROLE_ID;
-const FARM_ROLE_ID = process.env.FARM_ROLE_ID; 
+const FARM_ROLE_ID = process.env.FARM_ROLE_ID;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID
 const WELC_CH_ID = process.env.WELC_CH_ID;
 const FC_MEMBER_ROLE_ID = process.env.FC_MEMBER_ROLE_ID || '1236396084046069791';
 const NON_FC_MEMBER_ROLE_ID = process.env.NON_FC_MEMBER_ROLE_ID || '1249832281682743367';
@@ -466,6 +467,11 @@ async function processLodestoneLinkSubmission(member, message, isUsingDM) {
       } else if (isFCMember && verificationResult.isFCMember === true) {
         log(`Double verification confirmed for ${member.user.tag}: character ${characterId} is in Seventh Haven FC`, 'DEBUG');
         characterName = verificationResult.characterName || characterName; // Use page name if available
+      } else if (!isFCMember && verificationResult.isFCMember === true) {
+        // Character not in cached data, but character link shows they ARE a FC member
+        log(`Character ${characterId} not in cache but verified as FC member from character page for ${member.user.tag}`, 'INFO');
+        isFCMember = true;
+        characterName = verificationResult.characterName;
       } else if (!isFCMember) {
         // This is a non-FC member, get their character name from the page
         characterName = verificationResult.characterName;
@@ -2644,10 +2650,11 @@ async function handleModalSubmission(interaction) {
       id: interaction.id, // Use interaction ID as message ID
       reply: async (payload) => {
         // For modal submissions, we reply to the interaction instead
+        // Make responses ephemeral since this is a fallback when DM is disabled
         if (!interaction.replied && !interaction.deferred) {
-          return await interaction.reply({ ...payload, ephemeral: false });
+          return await interaction.reply({ ...payload, ephemeral: true });
         } else {
-          return await interaction.followUp({ ...payload, ephemeral: false });
+          return await interaction.followUp({ ...payload, ephemeral: true });
         }
       },
       delete: async () => {
@@ -2943,6 +2950,81 @@ client.on('guildMemberAdd', async (member) => {
         log(`Error handling guildMemberAdd for ${member.user.tag}: ${error.message}`, 'ERROR');
         await notifyAdminsForManualIntervention(member, `guildMemberAdd handler error: ${error.message}`);
     }
+});
+
+client.on('guildMemberRemove', async (member) => {
+  try {
+    // Defensive check: ensure member and guild exist
+    if (!member || !member.guild || !member.user) {
+      log('guildMemberRemove event received with invalid member data', 'WARN');
+      return;
+    }
+
+    log(`Member left: ${member.user.tag} (${member.id}) from guild ${member.guild.name}`, 'INFO');
+
+    // Get log channel with fallback
+    const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || '1236404423601815774';
+    const logChannel = LOG_CHANNEL_ID
+      ? member.guild.channels.cache.get(LOG_CHANNEL_ID)
+      : member.guild.channels.cache.find(ch => ch.name === 'logs');
+
+    // Defensive check: ensure log channel exists and is a text channel
+    if (!logChannel) {
+      log('Log channel not found for guildMemberRemove event', 'WARN');
+      return;
+    }
+
+    if (!logChannel.isTextBased()) {
+      log(`Log channel ${logChannel.id} is not a text-based channel`, 'WARN');
+      return;
+    }
+
+    // Check if bot has permission to send messages in the log channel
+    const permissions = logChannel.permissionsFor(member.guild.members.me);
+    if (!permissions || !permissions.has('SendMessages') || !permissions.has('EmbedLinks')) {
+      log(`Missing permissions to send messages in log channel ${logChannel.id}`, 'WARN');
+      return;
+    }
+
+    // Try to fetch audit logs to determine if member was kicked
+    let reason = 'Left voluntarily';
+    try {
+      const fetchedLogs = await member.guild.fetchAuditLogs({
+        limit: 5,
+        type: AuditLogEvent.MemberKick,
+      });
+
+      // Find kick log for this specific member
+      const kickLog = fetchedLogs.entries.find(entry => entry.target.id === member.id);
+
+      if (kickLog) {
+        reason = `Kicked by ${kickLog.executor.tag}`;
+      }
+    } catch (auditError) {
+      log(`Could not fetch audit logs for ${member.user.tag}: ${auditError.message}`, 'WARN');
+      reason = 'Left voluntarily or audit log unavailable';
+    }
+
+    // Create embed with proper setup
+    const leaveEmbed = new EmbedBuilder()
+      .setColor(0xED4245)
+      .setTitle('👋 Member Left')
+      .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+      .setDescription(`**User:** ${member.user.tag}\n**ID:** ${member.id}\n**Reason:** ${reason}`)
+      .setFooter({ text: `Left at ${new Date().toLocaleString()}` })
+      .setTimestamp();
+
+    // Send the embed to the log channel
+    try {
+      await logChannel.send({ embeds: [leaveEmbed] });
+      log(`Successfully logged member leave for ${member.user.tag}`, 'DEBUG');
+    } catch (sendError) {
+      log(`Error sending message to log channel: ${sendError.message}`, 'ERROR');
+    }
+  } catch (error) {
+    log(`Error in guildMemberRemove event: ${error.message}`, 'ERROR');
+    log(`Stack trace: ${error.stack}`, 'DEBUG');
+  }
 });
 
 

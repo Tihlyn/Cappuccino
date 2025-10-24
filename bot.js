@@ -11,6 +11,10 @@ const path = require('path');
 // Import trivia module
 const triviaModule = require('./quizz');
 
+// Import marketboard module
+const MarketboardModule = require('./modules/marketboard');
+const marketboardModule = new MarketboardModule();
+
 // Configuration
 const AUTHORIZED_USERS = process.env.AUTHORIZED_USERS; 
 const EVENT_CHANNEL_ID = process.env.EVENT_CHANNEL_ID;
@@ -2573,6 +2577,8 @@ const commands = [
     new SlashCommandBuilder()
         .setName('list-sessions')
         .setDescription('List all active quiz sessions in this server'),
+    // Marketboard commands
+    ...marketboardModule.getCommands(),
 ];
 
 // OK so this section about upload and config loading is old and deprecated. it was from another function from a personal project
@@ -2783,6 +2789,11 @@ client.on('interactionCreate', async interaction => {
     
     const { commandName, options } = interaction;
     
+    // Handle marketboard autocomplete
+    if (commandName === 'market') {
+        return await marketboardModule.handleAutocomplete(interaction);
+    }
+    
     if (commandName === 'create-event') {
         const focusedOption = options.getFocused(true);
         let choices = [];
@@ -2856,6 +2867,12 @@ client.on('interactionCreate', async interaction => {
             // Check if it's a trivia command
             if (commandName === 'trivia' || commandName === 'purge-quiz' || commandName === 'list-sessions') {
                 await triviaModule.handleTriviaInteraction(client, log, interaction);
+                return;
+            }
+
+            // Check if it's a market command
+            if (commandName === 'market') {
+                await marketboardModule.handleCommand(interaction);
                 return;
             }
 
